@@ -48,3 +48,11 @@ Potential command object structure:
     Timestamp: timestamp,
     OS: 'operatingsystem',
 }
+
+DB STRUCTURE:
+Users:
+    id,
+    username,
+    password,
+    os,
+    timestamp

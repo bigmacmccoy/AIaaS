@@ -1,20 +1,78 @@
-var express = require('express')
-var bodyParser = require('body-parser')
+var express = require('express');
+var bodyParser = require('body-parser');
+var sys = require('sys');
+var mysql = require('mysql');
  
-var app = express()
- 
+var app = express();
 // create application/json parser 
-var jsonParser = bodyParser.json()
- 
+var jsonParser = bodyParser.json();
 // create application/x-www-form-urlencoded parser 
-var urlencodedParser = bodyParser.urlencoded({ extended: false })
+var urlencodedParser = bodyParser.urlencoded({ extended: false });
 
-// POST /api/users gets JSON bodies 
+var errorCode = 0;
+
+app.listen(process.env.PORT, process.env.IP);
+
+//Static reply to requests
+app.get('/', function(req, res){
+  res.send("Welcome to AI-as-a-Service!");
+});
+// Get a username from an ID
 app.post('/getUserName', jsonParser, function (req, res) {
   if (!req.body){
-      return res.sendStatus(400);
+      errorCode = 1;
+      return res.sendStatus(translateErrorCode(2));
+  } else if(req.body.ID == null){
+      errorCode = 2;
+      return res.sendStatus(translateErrorCode(errorCode));
   }
-  console.log(req.body.ID);
-  return res.sendStatus(200);
-})
-app.listen(process.env.PORT, process.env.IP);
+  var connection = connect();
+  if(connection){
+    connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', [req.body.ID], function(err, results, fields) {
+      if (err){
+        console.log(err);
+        errorCode = 1;
+      }
+      if(results[0] != null){
+        console.log("Username for UserID " + req.body.ID + " is: " + results[0].username);
+        errorCode = 0;
+      }else{
+        errorCode = 3;
+      }
+      disconnect(connection);
+      return res.sendStatus(translateErrorCode(errorCode));
+    });
+  }
+});
+// Login function. Returns an auth token that the client stores and the submits with each query.
+app.post('/login', jsonParser, function(req, res){
+  
+});
+
+function translateErrorCode(errorCode){
+  switch(errorCode){
+    case 0: // Everything is copacetic.
+      return 200;
+    case 1: // Testing error or the code isn't written yet.
+      return 418;
+    case 2: // You tried to do something you shouldn't have
+      return 400;
+    case 3: // No response for you. Bad boy.
+      return 403;
+    default:
+      return 200;
+  }
+}
+function connect(){
+  var connection = mysql.createConnection({
+    host     : 'localhost',
+    user     : 'bigmacmccoy',
+    password : ''
+  });
+
+  connection.connect();
+  return connection;
+}
+function disconnect(connection){
+  connection.end();
+}
