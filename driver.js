@@ -8,6 +8,7 @@ var https = require('https');
 var key = fs.readFileSync('./ssl/key.pem');
 var cert = fs.readFileSync('./ssl/cert.pem');
 var crypto = require("crypto");
+var async = require("async");
 
 var app = express();
 /* Uncomment for HTTPS once that gets sorted.
@@ -55,6 +56,7 @@ app.get('/', function(req, res){
 Get User Name: 
 	Params:
 		ID
+		Session Token
 	Function:
 		Logs the Username for that ID.
 	Returns:
@@ -62,32 +64,39 @@ Get User Name:
 */
 app.post('/getUserName', jsonParser, function (req, res) {
 	var returnObject = null;
-	if(checkJSON(req.body, ["ID"])){
-		var connection = connect();
-		if(connection){
-			connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', [req.body.ID], function(err, results, fields) {
-				if (err){
-					console.log(err);
-					returnObject = {
-					  "ResponseCode":400,
-					  "Data":"Error: " + err
-					};
-				}
-				if(results[0] != null){
-					console.log(results[0].username);
-					returnObject = {
-					  "ResponseCode":200,
-					  "Data":"Username: " + results[0].username
-					};
-				}else{
-					returnObject = {
-					  "ResponseCode":400,
-					  "Data":"No Results were returned."
-					};
-				}
-				disconnect(connection);
-				res.status(returnObject.ResponseCode).send(returnObject.Data);
-			});
+	if(checkJSON(req.body, ["ID", "sessionToken"])){
+		if(authorize(req.body.ID, null, req.body.sessionToken)){
+			var connection = connect();
+			if(connection){
+				connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', [req.body.ID], function(err, results, fields) {
+					if (err){
+						console.log(err);
+						returnObject = {
+						  "ResponseCode":400,
+						  "Data":"Error: " + err
+						};
+					}
+					if(results[0] != null){
+						console.log(results[0].username);
+						returnObject = {
+						  "ResponseCode":200,
+						  "Data":"Username: " + results[0].username
+						};
+					}else{
+						returnObject = {
+						  "ResponseCode":400,
+						  "Data":"No Results were returned."
+						};
+					}
+					disconnect(connection);
+					res.status(returnObject.ResponseCode).send(returnObject.Data);
+				});
+			}
+		}else{
+			returnObject = {
+			  "ResponseCode":401,
+			  "Data":"Error: Unauthorized."
+			};
 		}
 	}else{
 		returnObject = {
@@ -103,16 +112,77 @@ Login:
 		Username
 		Password
 	Function:
-		Checks username and password against DB.
+	    Checks for an existing, valid token.
+	    If token,
+            return valid token
+	    If no token,
+		    Check username and password against DB.
+		    Create new token
+		    return valid token
 	Returns:
 		JSON containing the session token.
-	TODO:
-		Clean up how the app returns data. 
+	TODO: 
 		Write Auth using session token.
 */
+app.post('/login', jsonParser, function(req,res){
+    var returnObject = null;
+    if(checkJSON(req.body, ["username", "password"])){
+		if(checkJSON(req.body, ["sessionToken"])){
+            authorize(null, req.body.username, req.body.sessionToken, res);
+		}else{
+		    var connection = connect();
+    		if(connection){
+    			connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, results, fields) {
+    				if (err){
+    					console.log(err);
+    					returnObject = {
+    						"ResponseCode":400,
+    						"Data":"Error: " + err
+    					};
+    				}
+    				if(results[0] != null){
+    					if(req.body.password == results[0].password){
+    						
+    					}else{
+    						returnObject = {
+    							"ResponseCode":400,
+    							"Data":"Error: Passwords do not match!"
+    						};
+    						res.status(returnObject.ResponseCode).send(returnObject.Data);
+    						disconnect(connection);
+    					}
+    				}else{
+    					returnObject = {
+    						"ResponseCode":400,
+    						"Data":"Error: No results were returned from the DB."
+    					};
+    					res.status(returnObject.ResponseCode).send(returnObject.Data);
+    					disconnect(connection);
+    				}
+    			});
+    		}
+		}
+    }else{
+		returnObject = {
+			"ResponseCode":400,
+			"Data":"Error: The required parameters were not sent."
+		};
+		res.status(returnObject.ResponseCode).send(returnObject.Data);
+	}
+});
+/*
 app.post('/login', jsonParser, function(req, res){
 	var returnObject = null;
 	if(checkJSON(req.body, ["username", "password"])){
+		if(checkJSON(req.body, ["sessionToken"])){
+			if(authorize(null, req.body.username, req.body.sessionToken)){
+				returnObject = {
+					"ResponseCode":200,
+					"Data":"Existing sessionToken: " + req.body.sessionToken
+				};
+				res.status(returnObject.ResponseCode).send(returnObject.Data);
+			}
+		}
 		var connection = connect();
 		if(connection){
 			connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, results, fields) {
@@ -126,41 +196,55 @@ app.post('/login', jsonParser, function(req, res){
 				if(results[0] != null){
 					if(req.body.password == results[0].password){
 						var currentTime = results[0].lastAccess;
-						var newToken = crypto.createHmac("sha1", currentTime.toString()).update(req.body.username).digest('hex');
-						connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [newToken, req.body.username], function(err, results2, fields) {
-							if (err){
-								returnObject = {
-									"ResponseCode":400,
-									"Data":"Error (Login Update): " + err
-								};
-							}
-						});
-						connection.query("SELECT sessionToken FROM `c9`.`Users` WHERE username = ?", [req.body.username], function(err, results3, fields) {
-							if (err){
-								returnObject = {
-									"ResponseCode":400,
-									"Data":"Error (Login Select): " + err
-								};
-							}
-							if(results3[0] != null){
-								returnObject = {
-									"ResponseCode":200,
-									"Data": results3[0].sessionToken
-								};
-							}else{
-								returnObject = {
-									"ResponseCode":400,
-									"Data":"Error: Select statement did not return anything."
-								};
-							}
-							res.status(returnObject.ResponseCode).send(returnObject.Data);
-						});
+						var newToken = crypto.createHmac("sha1", currentTime).update(results[0].username).digest('hex');
+						var connection = connect();
+						if(connection){
+							connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [newToken, results[0].username], function(err, results2, fields) {
+								if (err){
+									returnObject = {
+										"ResponseCode":400,
+										"Data":"Error: Could Not Update Token."
+									};
+									res.status(returnObject.ResponseCode).send(returnObject.Data);
+									disconnect(connection);
+									return;
+								}
+								var username = results[0].username;
+								connection.query("SELECT * FROM `c9`.`Users` WHERE username = ?", [username], function(err, results3, fields) {
+									if (err){
+										returnObject = {
+											"ResponseCode":400,
+											"Data":"Error: " + err
+										};
+										res.status(returnObject.ResponseCode).send(returnObject.Data);
+										disconnect(connection);
+										return;
+									}
+									if(results3 != null){
+										returnObject = {
+											"ResponseCode":200,
+											"Data":"sessionToken: " + results3[0].sessionToken
+										};
+										res.status(returnObject.ResponseCode).send(returnObject.Data);
+										disconnect(connection);
+									}else{
+										returnObject = {
+											"ResponseCode":400,
+											"Data":"Error: Nothing was returned when selecting the token."
+										};
+										res.status(returnObject.ResponseCode).send(returnObject.Data);
+										disconnect(connection);
+									}
+								});
+							});
+						}
 					}else{
 						returnObject = {
 							"ResponseCode":400,
 							"Data":"Error: Passwords do not match!"
 						};
 						res.status(returnObject.ResponseCode).send(returnObject.Data);
+						disconnect(connection);
 					}
 				}else{
 					returnObject = {
@@ -168,18 +252,20 @@ app.post('/login', jsonParser, function(req, res){
 						"Data":"Error: No results were returned from the DB."
 					};
 					res.status(returnObject.ResponseCode).send(returnObject.Data);
+					disconnect(connection);
 				}
 			});
 		}
-		
 	}else{
 		returnObject = {
 			"ResponseCode":400,
-			"Data":"Could not connect to DB."
+			"Data":"Error: The required parameters were not sent."
 		};
 		res.status(returnObject.ResponseCode).send(returnObject.Data);
+		disconnect(connection);
 	}
 });
+*/
 /*
 Create User: 
 	Params:
@@ -257,7 +343,8 @@ function connect(){
 	var connection = mysql.createConnection({
 		host     : 'localhost',
 		user     : 'bigmacmccoy',
-		password : ''
+		password : '',
+		dateStrings : true
 	});
 
 	connection.connect();
@@ -280,4 +367,84 @@ function getMYSQLTime(){
 	var currentTime = new Date();
 	currentTime = currentTime.getUTCFullYear() + '-' +  ('00' + (currentTime.getUTCMonth()+1)).slice(-2) + '-' + ('00' + currentTime.getUTCDate()).slice(-2) + ' ' + ('00' + currentTime.getUTCHours()).slice(-2) + ':' + ('00' + currentTime.getUTCMinutes()).slice(-2) + ':' + ('00' + currentTime.getUTCSeconds()).slice(-2);
 	return currentTime;
+}
+function authorize(id, username, token, res){
+	if(id == null && username == null){
+		console.log("Something wrong with one of these: '" + id + "' '" + username + "'");
+		return false;
+	}else if(token == null){
+		console.log("No token: '" + token + "'");
+		return false;
+	}else{
+		var connection = connect();
+		if(connection){
+			if(id != null){
+				connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', id, function(err, results, fields) {
+					if (err){
+						console.log(err);
+						return false;
+					}
+					if(results[0] != null){
+						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
+							console.log("Valid token.");
+							var returnObject = {
+                				"ResponseCode":200,
+                				"Data":"Existing sessionToken: " + results[0].sessionToken
+                			};
+                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+						}else{
+							console.log("Invalid token");
+							var returnObject = {
+                				"ResponseCode":401,
+                				"Data":"Invalid token."
+                			};
+                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+						}
+					}else{
+						console.log("No valid token in DB.");
+						return false;
+					}
+				});
+			}else{
+				connection.query('SELECT * FROM `c9`.`Users` WHERE `username` = ?', username, function(err, results, fields) {
+					if (err){
+						console.log(err);
+						return false;
+					}
+					if(results[0] != null){
+						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
+							console.log("Valid token.");
+							var returnObject = {
+                				"ResponseCode":200,
+                				"Data":"Existing sessionToken: " + results[0].sessionToken
+                			};
+                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+						}else{
+							console.log("Invalid token");
+							var returnObject = {
+                				"ResponseCode":401,
+                				"Data":"Invalid token."
+                			};
+                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+						}
+					}else{
+						console.log("No valid token in DB.");
+						return false;
+					}
+				});
+			}
+		}
+	}
+}
+function recentTimestamp(timestamp){
+	var converted = Date.parse(timestamp.replace(' ', 'T'));
+	var currentTime = Date.now() + (3600*1000*5);
+	console.log(converted + " : " + currentTime);
+	var difference = currentTime - converted;
+	if(difference > 3600*3*1000){
+		console.log("Expired!");
+		return false;
+	}else{
+	    return true;
+	}
 }
