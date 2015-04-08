@@ -112,160 +112,184 @@ Login:
 		Username
 		Password
 	Function:
-	    Checks for an existing, valid token.
-	    If token,
-            return valid token
-	    If no token,
-		    Check username and password against DB.
-		    Create new token
-		    return valid token
+		Checks for an existing, valid token.
+		If token,
+			return valid token
+		If no token,
+			Check username and password against DB.
+			Create new token
+			return valid token
 	Returns:
 		JSON containing the session token.
 	TODO: 
 		Write Auth using session token.
 */
-app.post('/login', jsonParser, function(req,res){
-    var returnObject = null;
-    if(checkJSON(req.body, ["username", "password"])){
-		if(checkJSON(req.body, ["sessionToken"])){
-            authorize(null, req.body.username, req.body.sessionToken, res);
-		}else{
-		    var connection = connect();
-    		if(connection){
-    			connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, results, fields) {
-    				if (err){
-    					console.log(err);
-    					returnObject = {
-    						"ResponseCode":400,
-    						"Data":"Error: " + err
-    					};
-    				}
-    				if(results[0] != null){
-    					if(req.body.password == results[0].password){
-    						
-    					}else{
-    						returnObject = {
-    							"ResponseCode":400,
-    							"Data":"Error: Passwords do not match!"
-    						};
-    						res.status(returnObject.ResponseCode).send(returnObject.Data);
-    						disconnect(connection);
-    					}
-    				}else{
-    					returnObject = {
-    						"ResponseCode":400,
-    						"Data":"Error: No results were returned from the DB."
-    					};
-    					res.status(returnObject.ResponseCode).send(returnObject.Data);
-    					disconnect(connection);
-    				}
-    			});
-    		}
-		}
-    }else{
-		returnObject = {
-			"ResponseCode":400,
-			"Data":"Error: The required parameters were not sent."
-		};
-		res.status(returnObject.ResponseCode).send(returnObject.Data);
-	}
-});
-/*
 app.post('/login', jsonParser, function(req, res){
-	var returnObject = null;
-	if(checkJSON(req.body, ["username", "password"])){
-		if(checkJSON(req.body, ["sessionToken"])){
-			if(authorize(null, req.body.username, req.body.sessionToken)){
-				returnObject = {
-					"ResponseCode":200,
-					"Data":"Existing sessionToken: " + req.body.sessionToken
-				};
-				res.status(returnObject.ResponseCode).send(returnObject.Data);
-			}
-		}
-		var connection = connect();
-		if(connection){
-			connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, results, fields) {
-				if (err){
-					console.log(err);
-					returnObject = {
-						"ResponseCode":400,
-						"Data":"Error: " + err
-					};
+	async.waterfall([
+		function(callback){ // CheckJSON for username and password
+			var hasUserPass = checkJSON(req.body, ["username", "password"]);
+			callback(null, hasUserPass);
+		},
+		function(hasUserPass, callback){ // Check for user token
+			var hasToken = checkJSON(req.body, ["sessionToken"]);
+			callback(null, hasUserPass, hasToken);
+		},
+		function(hasUserPass, hasToken, callback){ //If the user has a token, check if the token in valid.
+			if(hasToken){
+				var connection = connect();
+				if(connection){
+					connection.query('SELECT * FROM `c9`.`Users` WHERE `sessionToken` = ?', [req.body.sessionToken], function(err, results, fields) {
+						if (err){
+							console.log(err);
+							return false;
+						}
+						if(results[0] != null){
+							if((results[0].sessionToken == req.body.sessionToken) && (recentTimestamp(results[0].lastAccess))){
+								console.log("Valid token.");
+								callback(null, hasUserPass, hasToken, true);
+							}else{
+								console.log("Invalid token");
+								if(hasUserPass){
+									callback(null, hasUserPass, hasToken, false);
+								}else{
+									var responseObject = {
+										"ResponseCode":401,
+										"Data":"Login Failed!"
+									};
+									console.log("Invalid token and no Username and Password.")
+									callback(responseObject);
+								}
+							}
+						}else{
+							console.log("No valid token in DB.");
+							if(hasUserPass){
+								callback(null, hasUserPass, hasToken, false);
+							}else{
+								var responseObject = {
+									"ResponseCode":401,
+									"Data":"Login Failed!"
+								};
+								console.log("No existing token and no Username and Password.")
+								callback(responseObject);
+							}
+						}
+					});
 				}
-				if(results[0] != null){
-					if(req.body.password == results[0].password){
-						var currentTime = results[0].lastAccess;
-						var newToken = crypto.createHmac("sha1", currentTime).update(results[0].username).digest('hex');
+				disconnect(connection);
+			}else{
+				if(hasUserPass){
+					callback(null, hasUserPass, hasToken, false);
+				}else{
+					var responseObject = {
+						"ResponseCode":401,
+						"Data":"Login Failed!"
+					};
+					console.log("No token or Username and Password.")
+					callback(responseObject);
+				}
+			}
+		},
+		function(hasUserPass, hasToken, authorized, callback){ // If not authorized, validate user and password, then generate auth token.
+			if(!authorized){
+				async.waterfall([
+					function(callback2){ // Get the User Object from DB.
 						var connection = connect();
 						if(connection){
-							connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [newToken, results[0].username], function(err, results2, fields) {
+							connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, userObj, fields) {
 								if (err){
-									returnObject = {
+									console.log(err);
+									var responseObject = {
+										"ResponseCode":400,
+										"Data":"Error: " + err
+									};
+									callback2(responseObject);
+								}
+								callback2(null, userObj[0]);
+							});
+						}
+						disconnect(connection);
+					},
+					function(userObj, callback2){ // Check if passwords match and get current time.
+						if(req.body.password == userObj.password){
+							if((recentTimestamp(userObj.lastAccess)) && (userObj.sessionToken != null)){
+								callback2(null, userObj, userObj.lastAccess, userObj.sessionToken);
+							}
+							var currentTime = userObj.lastAccess;
+							callback2(null, userObj, currentTime, null);
+						}else{
+							var responseObject = {
+								"ResponseCode":401,
+								"Data":"Error: Passwords do not match!"
+							};
+							callback2(responseObject);
+						}
+					},
+					function(userObj, currentTime, validToken, callback2){ // Generate token.
+						if(validToken != null){
+							callback2(null, userObj, validToken, true);
+						}
+						var newToken = crypto.createHmac("sha1", currentTime).update(userObj.username).digest('hex');
+						if(newToken != null){
+							callback2(null, userObj, newToken, false);
+						}else{
+							var responseObject = {
+								"ResponseCode":400,
+								"Data":"Error: Could not generate new token!"
+							};
+							callback2(responseObject);
+						}
+					},
+					function(userObj, token, existingToken, callback2){ //Load new token into DB
+						if(existingToken){
+							var responseObject = {
+								"ResponseCode":200,
+								"Data":'{"sessionToken":"' + token.toString() + '"}'
+							};
+							callback2(null, responseObject);
+						}
+						var connection = connect();
+						if(connection){
+							connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [token, userObj.username], function(err, results2, fields) {
+								if (err){
+									var responseObject = {
 										"ResponseCode":400,
 										"Data":"Error: Could Not Update Token."
 									};
-									res.status(returnObject.ResponseCode).send(returnObject.Data);
-									disconnect(connection);
-									return;
+									callback2(responseObject);
+								}else{
+									var responseObject = {
+										"ResponseCode":200,
+										"Data":'{"sessionToken":"' + token.toString() + '"}'
+									};
+									callback2(null, responseObject);
 								}
-								var username = results[0].username;
-								connection.query("SELECT * FROM `c9`.`Users` WHERE username = ?", [username], function(err, results3, fields) {
-									if (err){
-										returnObject = {
-											"ResponseCode":400,
-											"Data":"Error: " + err
-										};
-										res.status(returnObject.ResponseCode).send(returnObject.Data);
-										disconnect(connection);
-										return;
-									}
-									if(results3 != null){
-										returnObject = {
-											"ResponseCode":200,
-											"Data":"sessionToken: " + results3[0].sessionToken
-										};
-										res.status(returnObject.ResponseCode).send(returnObject.Data);
-										disconnect(connection);
-									}else{
-										returnObject = {
-											"ResponseCode":400,
-											"Data":"Error: Nothing was returned when selecting the token."
-										};
-										res.status(returnObject.ResponseCode).send(returnObject.Data);
-										disconnect(connection);
-									}
-								});
 							});
 						}
-					}else{
-						returnObject = {
-							"ResponseCode":400,
-							"Data":"Error: Passwords do not match!"
-						};
-						res.status(returnObject.ResponseCode).send(returnObject.Data);
 						disconnect(connection);
 					}
-				}else{
-					returnObject = {
-						"ResponseCode":400,
-						"Data":"Error: No results were returned from the DB."
-					};
-					res.status(returnObject.ResponseCode).send(returnObject.Data);
-					disconnect(connection);
-				}
-			});
+				], function(err, result){
+					if(err){
+						callback(err);
+					}else{
+						callback(null, result);
+					}
+				});
+			}else{
+				var result = {
+					"ResponseCode":200,
+					"Data":'{"sessionToken":' + req.body.sessionToken + '"}'
+				};
+				callback(null, result);
+			}
 		}
-	}else{
-		returnObject = {
-			"ResponseCode":400,
-			"Data":"Error: The required parameters were not sent."
-		};
-		res.status(returnObject.ResponseCode).send(returnObject.Data);
-		disconnect(connection);
-	}
+	], function(err, result){
+		if(err){
+			res.status(err.ResponseCode).send(err.Data);
+		}else{
+			res.status(result.ResponseCode).send(result.Data);
+		}
+	});
 });
-*/
 /*
 Create User: 
 	Params:
@@ -368,7 +392,7 @@ function getMYSQLTime(){
 	currentTime = currentTime.getUTCFullYear() + '-' +  ('00' + (currentTime.getUTCMonth()+1)).slice(-2) + '-' + ('00' + currentTime.getUTCDate()).slice(-2) + ' ' + ('00' + currentTime.getUTCHours()).slice(-2) + ':' + ('00' + currentTime.getUTCMinutes()).slice(-2) + ':' + ('00' + currentTime.getUTCSeconds()).slice(-2);
 	return currentTime;
 }
-function authorize(id, username, token, res){
+function authorize(id, username, token){
 	if(id == null && username == null){
 		console.log("Something wrong with one of these: '" + id + "' '" + username + "'");
 		return false;
@@ -387,18 +411,10 @@ function authorize(id, username, token, res){
 					if(results[0] != null){
 						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
 							console.log("Valid token.");
-							var returnObject = {
-                				"ResponseCode":200,
-                				"Data":"Existing sessionToken: " + results[0].sessionToken
-                			};
-                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+							return true;
 						}else{
 							console.log("Invalid token");
-							var returnObject = {
-                				"ResponseCode":401,
-                				"Data":"Invalid token."
-                			};
-                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+							return false;
 						}
 					}else{
 						console.log("No valid token in DB.");
@@ -414,18 +430,10 @@ function authorize(id, username, token, res){
 					if(results[0] != null){
 						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
 							console.log("Valid token.");
-							var returnObject = {
-                				"ResponseCode":200,
-                				"Data":"Existing sessionToken: " + results[0].sessionToken
-                			};
-                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+							return true;
 						}else{
 							console.log("Invalid token");
-							var returnObject = {
-                				"ResponseCode":401,
-                				"Data":"Invalid token."
-                			};
-                			res.status(returnObject.ResponseCode).send(returnObject.Data);
+							return false;
 						}
 					}else{
 						console.log("No valid token in DB.");
@@ -438,13 +446,12 @@ function authorize(id, username, token, res){
 }
 function recentTimestamp(timestamp){
 	var converted = Date.parse(timestamp.replace(' ', 'T'));
-	var currentTime = Date.now() + (3600*1000*5);
-	console.log(converted + " : " + currentTime);
+	var currentTime = Date.now();
 	var difference = currentTime - converted;
 	if(difference > 3600*3*1000){
 		console.log("Expired!");
 		return false;
 	}else{
-	    return true;
+		return true;
 	}
 }
