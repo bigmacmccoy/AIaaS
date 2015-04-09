@@ -63,48 +63,67 @@ Get User Name:
 		HTTP Response code
 */
 app.post('/getUserName', jsonParser, function (req, res) {
-	var returnObject = null;
-	if(checkJSON(req.body, ["ID", "sessionToken"])){
-		if(authorize(req.body.ID, null, req.body.sessionToken)){
-			var connection = connect();
-			if(connection){
-				connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', [req.body.ID], function(err, results, fields) {
-					if (err){
-						console.log(err);
-						returnObject = {
-						  "ResponseCode":400,
-						  "Data":"Error: " + err
-						};
-					}
-					if(results[0] != null){
-						console.log(results[0].username);
-						returnObject = {
-						  "ResponseCode":200,
-						  "Data":"Username: " + results[0].username
-						};
-					}else{
-						returnObject = {
-						  "ResponseCode":400,
-						  "Data":"No Results were returned."
-						};
-					}
+	async.waterfall([
+		function(callback){ // Check if the user has provided an ID and a token
+			var hasTokenID = checkJSON(req.body, ["ID", "sessionToken"]);
+			callback(null, hasTokenID);
+		},
+		function(hasTokenID, hasToken, callback){ //If the user has a token, check if the token in valid.
+			if(hasTokenID){
+				var connection = connect();
+				if(connection){
+					connection.query('SELECT * FROM `c9`.`Users` WHERE `sessionToken` = ?', [req.body.sessionToken], function(err, results, fields) {
+						if (err){
+								var responseObject = {
+									"ResponseCode":401,
+									"Data":"Login Failed!"
+								};
+								console.log("Invalid token.")
+								callback(responseObject);
+						}
+						if(results[0] != null){
+							if((results[0].sessionToken == req.body.sessionToken) && (recentTimestamp(results[0].lastAccess))){
+								console.log("Valid token.");
+								var responseObject = {
+									"ResponseCode":401,
+									"Data":'{"Username":"' + req.body.username + '"'
+								};
+								callback(null, responseObject);
+							}else{
+								var responseObject = {
+									"ResponseCode":401,
+									"Data":"Login Failed!"
+								};
+								console.log("Invalid token.");
+								callback(responseObject);
+							}
+						}else{
+							var responseObject = {
+								"ResponseCode":401,
+								"Data":"Login Failed!"
+							};
+							console.log("No existing tokend.")
+							callback(responseObject);
+						}
+					});
 					disconnect(connection);
-					res.status(returnObject.ResponseCode).send(returnObject.Data);
-				});
+				}else{
+					var responseObject = {
+						"ResponseCode":400,
+						"Data":"Login Failed!"
+					};
+					console.log("Connection Error")
+					callback(responseObject);
+				}
 			}
-		}else{
-			returnObject = {
-			  "ResponseCode":401,
-			  "Data":"Error: Unauthorized."
-			};
 		}
-	}else{
-		returnObject = {
-		  "ResponseCode":400,
-		  "Data":"The necessary parameters were not sent."
-		};
-		res.status(returnObject.ResponseCode).send(returnObject.Data);
-	}
+		], function(err, result){
+			if(err){
+				res.status(err.ResponseCode).send(err.Data);
+			}else{
+				res.status(result.ResponseCode).send(result.Data);
+			}
+	});
 });
 /*
 Login:
@@ -121,8 +140,6 @@ Login:
 			return valid token
 	Returns:
 		JSON containing the session token.
-	TODO: 
-		Write Auth using session token.
 */
 app.post('/login', jsonParser, function(req, res){
 	async.waterfall([
@@ -141,7 +158,7 @@ app.post('/login', jsonParser, function(req, res){
 					connection.query('SELECT * FROM `c9`.`Users` WHERE `sessionToken` = ?', [req.body.sessionToken], function(err, results, fields) {
 						if (err){
 							console.log(err);
-							return false;
+							callback(null, hasUserPass, hasToken, false);
 						}
 						if(results[0] != null){
 							if((results[0].sessionToken == req.body.sessionToken) && (recentTimestamp(results[0].lastAccess))){
@@ -192,7 +209,7 @@ app.post('/login', jsonParser, function(req, res){
 		function(hasUserPass, hasToken, authorized, callback){ // If not authorized, validate user and password, then generate auth token.
 			if(!authorized){
 				async.waterfall([
-					function(callback2){ // Get the User Object from DB.
+					function(callback2){
 						var connection = connect();
 						if(connection){
 							connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, userObj, fields) {
@@ -213,9 +230,10 @@ app.post('/login', jsonParser, function(req, res){
 						if(req.body.password == userObj.password){
 							if((recentTimestamp(userObj.lastAccess)) && (userObj.sessionToken != null)){
 								callback2(null, userObj, userObj.lastAccess, userObj.sessionToken);
+							}else{
+								var currentTime = userObj.lastAccess;
+								callback2(null, userObj, currentTime, null);
 							}
-							var currentTime = userObj.lastAccess;
-							callback2(null, userObj, currentTime, null);
 						}else{
 							var responseObject = {
 								"ResponseCode":401,
@@ -243,7 +261,7 @@ app.post('/login', jsonParser, function(req, res){
 						if(existingToken){
 							var responseObject = {
 								"ResponseCode":200,
-								"Data":'{"sessionToken":"' + token.toString() + '"}'
+								"Data":'{"sessionToken":"' + token + '"}'
 							};
 							callback2(null, responseObject);
 						}
@@ -259,7 +277,7 @@ app.post('/login', jsonParser, function(req, res){
 								}else{
 									var responseObject = {
 										"ResponseCode":200,
-										"Data":'{"sessionToken":"' + token.toString() + '"}'
+										"Data":'{"sessionToken":"' + token + '"}'
 									};
 									callback2(null, responseObject);
 								}
@@ -302,34 +320,56 @@ Create User:
 		HTTP Response code
 */
 app.post("/createUser", jsonParser, function(req, res){
-	var returnObject = {};
-	if(checkJSON(req.body, ["username", "password", "os"])){
-		var connection = connect();
-		if(connection){
-			connection.query("INSERT INTO `c9`.`Users`(`username`,`password`,`os`) VALUES(?,?,?)", [req.body.username, req.body.password, req.body.os], function(err, results, fields) {
-				if (err){
-					console.log(err);
-					returnObject = {
-						"ResponseCode":400,
-						"Data":"Error: " + err
-					};
-				}
-				returnObject = {
-					"ResponseCode":200,
-					"Data":"User has been created."
+	var resultObject = null;
+	async.waterfall([
+		function(callback){
+			var hasUserPassOS = checkJSON(req.body, ["username", "password", "os"]);
+			if(hasUserPassOS){
+				callback(null, hasUserPassOS);
+			}else{
+				resultObject = {
+					"ResponseObject":400,
+					"Data":"Error: Required parameters were not included."
 				};
-				disconnect(connection);
-				res.status(returnObject.ResponseCode).send(returnObject.Data);
-			});
+				callback(resultObject);
+			}
+		},
+		function(hasUserPassOS, callback){
+			var connection = connect();
+			if(connection){
+				connection.query("INSERT INTO `c9`.`Users`(`username`,`password`,`os`) VALUES(?,?,?)", [req.body.username, req.body.password, req.body.os], function(err, results, fields) {
+					if (err){
+						console.log(err);
+						resultObject = {
+							"ResponseCode":400,
+							"Data":"Error: " + err
+						};
+						callback(resultObject);
+					}
+					disconnect(connection);
+					callback(null, true)
+				});
+			}
+		},
+		function(userInserted, callback){
+			if(userInserted){
+				callback(null, true);
+			}else{
+				
+				if(result.ResponseCode != 200){
+					callback(result);
+				}else{
+					callback(null, result);
+				}
+			}
 		}
-		
-	}else{
-		returnObject = {
-			"ResponseObject":400,
-			"Data":"Error: Required parameters were not included."
-		};
-		res.status(returnObject.ResponseCode).send(returnObject.Data);
-	}
+		], function(err, result){
+			if(err){
+				res.status(err.ResponseCode).send(err.Data);
+			}else{
+				res.status(result.ResponseCode).send(result.Data);
+			}
+	});
 });
 /*
 Check JSON: 
@@ -391,58 +431,6 @@ function getMYSQLTime(){
 	var currentTime = new Date();
 	currentTime = currentTime.getUTCFullYear() + '-' +  ('00' + (currentTime.getUTCMonth()+1)).slice(-2) + '-' + ('00' + currentTime.getUTCDate()).slice(-2) + ' ' + ('00' + currentTime.getUTCHours()).slice(-2) + ':' + ('00' + currentTime.getUTCMinutes()).slice(-2) + ':' + ('00' + currentTime.getUTCSeconds()).slice(-2);
 	return currentTime;
-}
-function authorize(id, username, token){
-	if(id == null && username == null){
-		console.log("Something wrong with one of these: '" + id + "' '" + username + "'");
-		return false;
-	}else if(token == null){
-		console.log("No token: '" + token + "'");
-		return false;
-	}else{
-		var connection = connect();
-		if(connection){
-			if(id != null){
-				connection.query('SELECT * FROM `c9`.`Users` WHERE `id` = ?', id, function(err, results, fields) {
-					if (err){
-						console.log(err);
-						return false;
-					}
-					if(results[0] != null){
-						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
-							console.log("Valid token.");
-							return true;
-						}else{
-							console.log("Invalid token");
-							return false;
-						}
-					}else{
-						console.log("No valid token in DB.");
-						return false;
-					}
-				});
-			}else{
-				connection.query('SELECT * FROM `c9`.`Users` WHERE `username` = ?', username, function(err, results, fields) {
-					if (err){
-						console.log(err);
-						return false;
-					}
-					if(results[0] != null){
-						if((results[0].sessionToken == token) && (recentTimestamp(results[0].lastAccess))){
-							console.log("Valid token.");
-							return true;
-						}else{
-							console.log("Invalid token");
-							return false;
-						}
-					}else{
-						console.log("No valid token in DB.");
-						return false;
-					}
-				});
-			}
-		}
-	}
 }
 function recentTimestamp(timestamp){
 	var converted = Date.parse(timestamp.replace(' ', 'T'));
