@@ -60,3 +60,13 @@ Inputs:
     previousID,
     nextID,
     isValid
+
+Commands:
+    id,
+    word,
+    correct,
+    incorrect,
+    action
+    
+Thoughts: If I want to use kNN, I can use number of times correct as the x axis and the number of times incorrect as the y axis, 
+but then I would have to add in an unknown node, which wouldn't have values for either of those.
