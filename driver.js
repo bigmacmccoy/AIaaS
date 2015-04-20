@@ -136,170 +136,48 @@ Login:
 		JSON containing the session token.
 */
 app.post('/login', jsonParser, function(req, res){
-	async.waterfall([
-		function(callback){ // CheckJSON for username and password
-			var hasUserPass = checkJSON(req.body, ["username", "password"]);
-			callback(null, hasUserPass);
-		},
-		function(hasUserPass, callback){ // Check for user token
-			var hasToken = checkJSON(req.body, ["sessionToken"]);
-			callback(null, hasUserPass, hasToken);
-		},
-		function(hasUserPass, hasToken, callback){ //If the user has a token, check if the token in valid.
-			if(hasToken){
-				var connection = connect();
-				if(connection){
-					connection.query('SELECT * FROM `c9`.`Users` WHERE `sessionToken` = ?', [req.body.sessionToken], function(err, results, fields) {
-						if (err){
-							console.log(err);
-							callback(null, hasUserPass, hasToken, false);
-						}
-						if(results[0] != null){
-							if((results[0].sessionToken == req.body.sessionToken) && (recentTimestamp(results[0].lastAccess))){
-								console.log("Valid token.");
-								callback(null, hasUserPass, hasToken, true);
-							}else{
-								console.log("Invalid token");
-								if(hasUserPass){
-									callback(null, hasUserPass, hasToken, false);
-								}else{
-									var responseObject = {
-										"ResponseCode":401,
-										"Data":"Login Failed!"
-									};
-									console.log("Invalid token and no Username and Password.")
-									callback(responseObject);
-								}
-							}
-						}else{
-							console.log("No valid token in DB.");
-							if(hasUserPass){
-								callback(null, hasUserPass, hasToken, false);
-							}else{
-								var responseObject = {
-									"ResponseCode":401,
-									"Data":"Login Failed!"
-								};
-								console.log("No existing token and no Username and Password.")
-								callback(responseObject);
-							}
-						}
-					});
-				}
-				disconnect(connection);
-			}else{
-				if(hasUserPass){
-					callback(null, hasUserPass, hasToken, false);
-				}else{
-					var responseObject = {
-						"ResponseCode":401,
-						"Data":"Login Failed!"
-					};
-					console.log("No token or Username and Password.")
-					callback(responseObject);
-				}
-			}
-		},
-		function(hasUserPass, hasToken, authorized, callback){ // If not authorized, validate user and password, then generate auth token.
-			if(!authorized){
-				async.waterfall([
-					function(callback2){
-						var connection = connect();
-						if(connection){
-							connection.query("SELECT * FROM `c9`.`Users` WHERE `username` = ?", [req.body.username], function(err, userObj, fields) {
-								if (err){
-									console.log(err);
-									var responseObject = {
-										"ResponseCode":400,
-										"Data":"Error: " + err
-									};
-									callback2(responseObject);
-								}
-								callback2(null, userObj[0]);
-							});
-						}
-						disconnect(connection);
-					},
-					function(userObj, callback2){ // Check if passwords match and get current time.
-						if(req.body.password == userObj.password){
-							if((recentTimestamp(userObj.lastAccess)) && (userObj.sessionToken != null)){
-								callback2(null, userObj, userObj.lastAccess, userObj.sessionToken);
-							}else{
-								var currentTime = userObj.lastAccess;
-								callback2(null, userObj, currentTime, null);
-							}
-						}else{
-							var responseObject = {
-								"ResponseCode":401,
-								"Data":"Error: Passwords do not match!"
-							};
-							callback2(responseObject);
-						}
-					},
-					function(userObj, currentTime, validToken, callback2){ // Generate token.
-						if(validToken != null){
-							callback2(null, userObj, validToken, true);
-						}
-						var newToken = crypto.createHmac("sha1", currentTime).update(userObj.username).digest('hex');
-						if(newToken != null){
-							callback2(null, userObj, newToken, false);
-						}else{
-							var responseObject = {
-								"ResponseCode":400,
-								"Data":"Error: Could not generate new token!"
-							};
-							callback2(responseObject);
-						}
-					},
-					function(userObj, token, existingToken, callback2){ //Load new token into DB
-						if(existingToken){
-							var responseObject = {
-								"ResponseCode":200,
-								"Data":'{"sessionToken":"' + token + '"}'
-							};
-							callback2(null, responseObject);
-						}
-						var connection = connect();
-						if(connection){
-							connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [token, userObj.username], function(err, results2, fields) {
-								if (err){
-									var responseObject = {
-										"ResponseCode":400,
-										"Data":"Error: Could Not Update Token."
-									};
-									callback2(responseObject);
-								}else{
-									var responseObject = {
-										"ResponseCode":200,
-										"Data":'{"sessionToken":"' + token + '"}'
-									};
-									callback2(null, responseObject);
-								}
-							});
-						}
-						disconnect(connection);
-					}
-				], function(err, result){
-					if(err){
-						callback(err);
-					}else{
-						callback(null, result);
-					}
-				});
-			}else{
-				var result = {
-					"ResponseCode":200,
-					"Data":'{"sessionToken":' + req.body.sessionToken + '"}'
-				};
-				callback(null, result);
-			}
+	var paramNames = ["username", "password"];
+	var token = ((req.body.token) ? req.body.token : null);
+	var query = "SELECT * FROM `c9`.`Users` WHERE `username` = ?";
+	var obj = {
+		"paramNames": paramNames,
+		"validJSON":false,
+		"params":req.body,
+		"token":token,
+		"validToken":undefined,
+		"authorized":false,
+		"query":query,
+		"queryParams":[req.body.username],
+		"queryResults":undefined,
+		"responseCode":null,
+		"responseData":null
+	};
+	var login = function(obj, callback){
+		if(obj.authorized){
+			obj.responseCode = 200;
+			obj.responseData = {
+				"username":obj.params.username,
+				"status":"Logged In",
+				"token":obj.token
+			};
+			callback(null, obj);
+		}else{
+			obj.responseCode = 420;
+			obj.responseData = "An unexpected, impossible error occured. Dammit!";
+			callback(obj);
 		}
-	], function(err, result){
+	};
+	var process = async.seq(checkJSONAsync, validateTokenAsync, queryAsync, generateTokenAsync, updateTokenAsync, login);
+	process(obj, function(err, result){
 		if(err){
 			res.status(err.ResponseCode).send(err.Data);
 		}else{
-			res.status(result.ResponseCode).send(result.Data);
-		}
+			if((!obj.responseCode) && (!obj.responseData)){
+				res.status(200).send(obj.queryResults);
+			}else{
+				res.status(obj.responseCode).send(obj.responseData);
+			}
+		}	
 	});
 });
 /*
@@ -686,52 +564,137 @@ app.post("submitText", jsonParser, function(req, res){
 Test functions. Currently testing Async modularization.
 */
 app.post("/test", jsonParser, function(req, res){
-	var paramNames = ["Test", "Test2"];
-	var query = "SELECT * FROM `c9`.`Users` WHERE `username` = ?";
-	var obj = {
-		"paramNames": paramNames,
-		"validJSON":false,
-		"params":req.body,
-		"authorized":false,
-		"query":query,
-		"queryResults":undefined,
-		"responseCode":null,
-		"responseData":null
-	};
-	var process = async.seq(checkJSONAsync, AuthorizeAsync, QueryAsync);
-	process(obj, function(err, result){
-		if(err){
-			res.status(err.ResponseCode).send(err.Data);
-		}else{
-			if((!obj.responseCode) && (!obj.responseData)){
-				res.status(200).send(obj.queryResults);
-			}else{
-				res.status(obj.responseCode).send(obj.responseData);
-			}
-		}	
-	});
+
 });
-function AuthorizeAsync(obj, callback){
-	console.log("Authorized In Test");
-	obj.authorized = true;
-	callback(null, obj);
+function updateTokenAsync(obj, callback){
+	if((!obj.authorized) && (obj.validToken)){
+		var connection = connect();
+		if(connection){
+			connection.query("UPDATE `c9`.`Users` SET `sessionToken` = ? WHERE `username` = ?", [obj.token, obj.params.username], function(err, results, fields) {
+				if (err){
+					obj.responseCode = 400;
+					obj.responseData = "Error: Could not update the new token!";
+					callback(obj);
+				}else{
+					console.log("Updated token.");
+					obj.authorized = true;
+					callback(null, obj);
+				}
+			});
+		}
+	}else{
+		callback(null, obj);
+	}
 }
-function QueryAsync(obj, callback){
-	console.log("Test Query Run!");
-	obj.queryResults = "BigMacMcCoy_TEST";
-	callback(null, obj);
+function generateTokenAsync(obj, callback){
+	if(obj.validToken && obj.authorized){
+		callback(null, obj);
+	}else{
+		if(obj.queryResults){
+			if(obj.queryResults.password == obj.params.password){
+				if((recentTimestamp(obj.queryResults.lastAccess)) && (obj.queryResults.sessionToken != "")){
+					console.log("Token in DB still valid.");
+					obj.validToken = true;
+					obj.authorized = true;
+					obj.token = obj.queryResults.sessionToken;
+					callback(null, obj);
+				}else{
+					var currentTime = obj.queryResults.lastAccess;
+					var newToken = crypto.createHmac("sha1", currentTime).update(obj.params.username).digest('hex');
+					if(newToken != null){
+						obj.validToken = true;
+						obj.token = newToken;
+						callback(null, obj);
+					}else{
+						obj.responseCode = 400;
+						obj.responseData = "Error: Could not generate new token!";
+						callback(obj);
+					}
+				}
+			}
+		}else{
+			console.log("Error: No query results before token generation.");
+			obj.responseCode = 400;
+			obj.responseData = "Error: Could not generate new token!";
+			callback(obj);
+		}
+	}
+}
+function validateTokenAsync(obj, callback){
+	if(obj.token){
+		var connection = connect();
+		if(connection){
+			connection.query('SELECT * FROM `c9`.`Users` WHERE `sessionToken` = ?', [obj.token], function(err, results, fields) {
+				if (err){
+					console.log(err);
+					obj.responseCode = 418;
+					obj.responseData = "Validate Token: Error with database!";
+					callback(obj);
+				}
+				if(results[0] != null){
+					if(recentTimestamp(results[0].lastAccess)){
+						console.log("Valid token.");
+						obj.validToken = true;
+						obj.authorized = true;
+						disconnect(connection);
+						callback(null, obj);
+					}else{
+						console.log("Invalid token");
+						obj.responseCode = 401;
+						obj.responseData = "Invalid token!";
+						obj.validToken = false;
+						obj.authorized = false;
+						disconnect(connection);
+						callback(obj);
+					}
+				}else{
+					console.log("No valid token in DB.");
+					obj.responseCode = 401;
+					obj.responseData = "Invalid token! (Not in Database!)";
+					obj.validToken = false;
+					obj.authorized = false;
+					disconnect(connection);
+					callback(obj);
+				}
+			});
+		}
+	}else{
+		console.log("No token provided.")
+		obj.validToken = false;
+		obj.authorized = false;
+		callback(null, obj);
+	}
+}
+function queryAsync(obj, callback){
+	var connection = connect();
+	if(connection){
+		connection.query(obj.query, obj.queryParams, function(err, results, fields) {
+			if (err){
+				console.log("Query DB Error");
+				obj.responseCode = 418;
+				obj.responseData = "Query: Error with database!";
+				obj.queryResults = null;
+				disconnect(connection);
+				callback(obj);
+			}else{
+				console.log(JSON.stringify(results[0]));
+				obj.queryResults = results[0];
+				disconnect(connection);
+				callback(null, obj);
+			}
+		});
+	}
 }
 function checkJSONAsync(obj, callback){
 	if (!obj.params){
 		obj.responseCode = 418;
-		obj.responseData = "No params!"
+		obj.responseData = "No params!";
 		callback(obj);
 	} else {
-		for(var param in obj.params){
-			var current = obj.params[param];
-			if(obj.params[current] == null){
-				obj.responseCode = 418;
-				obj.responseData = "Params are not correct"
+		for(var i = 0; i < obj.paramNames.length; i++){
+			if(obj.params[obj.paramNames[i]] == null){
+				obj.responseCode = 400;
+				obj.responseData = "Error: The required parameters were not sent!";
 				callback(obj);
 			}
 		}
