@@ -18,7 +18,9 @@ var server = https.createServer({
 }, app).listen(process.env.PORT, process.env.IP);
 */
 // Comment out the next line once HTTPS functions.
-var server = app.listen(process.env.PORT, process.env.IP);
+var port = process.env.PORT || 1337;
+var ip = process.env.IP || "localhost";
+var server = app.listen(port, ip);
 
 // create application/json parser 
 var jsonParser = bodyParser.json();
